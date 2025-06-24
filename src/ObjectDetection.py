@@ -1,13 +1,16 @@
+# Import libraries
 import os
 import cv2
 import numpy as np
+import sys
 import matplotlib.pyplot as plt
-from IPython.display import Image
 from zipfile import ZipFile
 from urllib.request import urlretrieve
+from base64 import b64encode
+
 
 def download_and_unzip(url, save_path):
-    print(f"Downloading and extracting assets....", end="")
+    print(f"Downloading and extracting assests....", end="")
 
     # Downloading zip file using urllib package.
     urlretrieve(url, save_path)
@@ -22,102 +25,108 @@ def download_and_unzip(url, save_path):
 
     except Exception as e:
         print("\nInvalid file.", e)
+        
+URL = r"https://www.dropbox.com/s/xoomeq2ids9551y/opencv_bootcamp_assets_NB13.zip?dl=1"
 
-URL = r"https://www.dropbox.com/s/qhhlqcica1nvtaw/opencv_bootcamp_assets_NB1.zip?dl=1"
+asset_zip_path = os.path.join(os.getcwd(), f"opencv_bootcamp_assets_NB13.zip")
 
-asset_zip_path = os.path.join(os.getcwd(), "opencv_bootcamp_assets_NB1.zip")
-
-# Download if asset ZIP does not exist.
+# Download if assest ZIP does not exists.
 if not os.path.exists(asset_zip_path):
     download_and_unzip(URL, asset_zip_path)
+classFile  = "coco_class_labels.txt"
+with open(classFile) as fp:
+    labels = fp.read().split("\n")
+    
+print(labels)
 
-# Split the image into the B,G,R components
-img_bottle = cv2.imread("bottle.jpg", cv2.IMREAD_COLOR)
-r, g, b = cv2.split(img_bottle)
+modelFile  = os.path.join("models", "ssd_mobilenet_v2_coco_2018_03_29", "frozen_inference_graph.pb")
+configFile = os.path.join("models", "ssd_mobilenet_v2_coco_2018_03_29.pbtxt")
+# Read the Tensorflow network
+net = cv2.dnn.readNetFromTensorflow(modelFile, configFile)
+# For ach file in the directory
+def detect_objects(net, im, dim = 300):
 
-# Show the channels
-plt.figure(figsize=[20, 5])
+    # Create a blob from the image
+    blob = cv2.dnn.blobFromImage(im, 1.0, size=(dim, dim), mean=(0, 0, 0), swapRB=True, crop=False)
 
-plt.subplot(141);plt.imshow(r, cmap="gray");plt.title("Red Channel")
-plt.subplot(142);plt.imshow(g, cmap="gray");plt.title("Green Channel")
-plt.subplot(143);plt.imshow(b, cmap="gray");plt.title("Blue Channel")
+    # Pass blob to the network
+    net.setInput(blob)
 
-# Merge the individual channels into a BGR image
-imgMerged = cv2.merge((r, g, b))
+    # Peform Prediction
+    objects = net.forward()
+    return objects
+FONTFACE = cv2.FONT_HERSHEY_SIMPLEX
+FONT_SCALE = 0.7
+THICKNESS = 1
+def display_text(im, text, x, y):
+    # Get text size
+    textSize = cv2.getTextSize(text, FONTFACE, FONT_SCALE, THICKNESS)
+    dim = textSize[0]
+    baseline = textSize[1]
 
-# Show the merged output
-plt.subplot(144)
-plt.imshow(imgMerged[:, :, ::-1])
-plt.title("Merged Output")
-print(img_bottle)
-plt.show()
-#Reverse Channel Order
+    # Use text size to create a black rectangle
+    cv2.rectangle(
+        im,
+        (x, y - dim[1] - baseline),
+        (x + dim[0], y + baseline),
+        (0, 0, 0),
+        cv2.FILLED,
+    )
 
-#Show bottle only
-cropped_bottle_bgr = imgMerged[800:2100, 1100:1700]
-cropped_bottle = cropped_bottle_bgr[:,:,::-1]
-plt.imshow(cropped_bottle);plt.title("Bottle Croppped")
-#Using 'dsize' resizing the image while maintaining aspect ratio
-desired_width = 500
-aspect_ratio = desired_width / cropped_bottle.shape[1]
-desired_height = int(cropped_bottle.shape[0] * aspect_ratio)
-dim = (desired_width, desired_height)
+    # Display text inside the rectangle
+    cv2.putText(
+        im,
+        text,
+        (x, y - 5),
+        FONTFACE,
+        FONT_SCALE,
+        (0, 255, 255),
+        THICKNESS,
+        cv2.LINE_AA,
+    )
 
-# Resize image
-resized_cropped_region = cv2.resize(cropped_bottle, dsize=dim, interpolation=cv2.INTER_AREA)
-plt.imshow(resized_cropped_region)
-plt.show()
-# Save resized image to disk
-cv2.imwrite("resized_bottle.png", resized_cropped_region)
+def display_objects(im, objects, threshold=0.25):
+    rows = im.shape[0]
+    cols = im.shape[1]
 
-# Display the cropped and resized image
-Image(filename="resized_bottle.png")
+    # For every Detected Object
+    for i in range(objects.shape[2]):
+        # Find the class and confidence
+        classId = int(objects[0, 0, i, 1])
+        score = float(objects[0, 0, i, 2])
 
-#Annotation in Text
-imageText = img_bottle.copy()
-text = "Mai Dubai Water Bottle"
-fontScale = 7
-fontFace = cv2.FONT_HERSHEY_SIMPLEX
-fontColor = (0, 255, 0)
-fontThickness = 5
+        # Recover original cordinates from normalized coordinates
+        x = int(objects[0, 0, i, 3] * cols)
+        y = int(objects[0, 0, i, 4] * rows)
+        w = int(objects[0, 0, i, 5] * cols - x)
+        h = int(objects[0, 0, i, 6] * rows - y)
 
-cv2.putText(imageText, text, (200, 2300), fontFace, fontScale, fontColor, fontThickness, cv2.LINE_AA);
+        # Check if the detection is of good quality
+        if score > threshold:
+            display_text(im, "{}".format(labels[classId]), x, y)
+            cv2.rectangle(im, (x, y), (x + w, y + h), (255, 255, 255), 2)
 
-# Display the image
-plt.imshow(imageText[:, :, ::-1])
-plt.show()
+    # Convert Image to RGB since we are using Matplotlib for displaying image
+    mp_img = cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+    plt.figure(figsize=(30, 10))
+    plt.imshow(mp_img)
+    plt.show()
 
-#Brightness of Picture
-matrix = np.ones(img_bottle.shape, dtype="uint8") * 50
-img_bottle = cv2.cvtColor(img_bottle, cv2.COLOR_BGR2RGB)
-img_rgb_brighter = cv2.add(img_bottle, matrix)
-img_rgb_darker   = cv2.subtract(img_bottle, matrix)
+s = 0
+if len(sys.argv) > 1:
+    s = sys.argv[1]
 
+source = cv2.VideoCapture(s)
+win_name = 'Camera Preview'
+cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
 
-# Show the images
-plt.figure(figsize=[18, 5])
-plt.subplot(131); plt.imshow(img_rgb_darker);  plt.title("Darker");
-plt.subplot(132); plt.imshow(img_bottle);         plt.title("Original");
-plt.subplot(133); plt.imshow(img_rgb_brighter);plt.title("Brighter");
-plt.show()
+while cv2.waitKey(1) != 27: # Escape
+    has_frame, frame = source.read()
+    if not has_frame:
+        break
+    cv2.imshow(win_name, frame)
+    objects = detect_objects(net, frame)
+    display_objects(frame, objects)
 
-#Contrast of images using Multiplication (Overflow handling)
-
-matrix_low_contrast = np.ones(img_bottle.shape) * 0.8
-matrix_high_contast = np.ones(img_bottle.shape) * 1.2
-
-img_rgb_lower_contrast  = np.uint8(cv2.multiply(np.float64(img_bottle.shape), matrix_low_contrast))
-img_rgb_higher_contrast = np.uint8(np.clip(cv2.multiply(np.float64(img_bottle.shape), matrix_high_contast), 0, 255))
-
-# Show the images
-plt.figure(figsize=[18,5])
-plt.subplot(131); plt.imshow(img_rgb_lower_contrast); plt.title("Lower Contrast");
-plt.subplot(132); plt.imshow(img_bottle);       plt.title("Original");
-plt.subplot(133); plt.imshow(img_rgb_higher_contrast);plt.title("Higher Contrast");
-plt.show()
-
-#Thresholding
-img_thresh_adp = cv2.adaptiveThreshold(img_bottle, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 7)
-plt.figure(figsize=[18,15])
-plt.subplot(224); plt.imshow(img_thresh_adp,  cmap="gray");  plt.title("Thresholded (adaptive)");
-plt.show()
+source.release()
+cv2.destroyWindow(win_name)
